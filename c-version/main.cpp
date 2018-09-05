@@ -11,15 +11,19 @@
 #include <openssl/pem.h>
 #include <openssl/x509.h>
 
-int main() {
+#include <vector>
+#include <string_view>
+#include <iostream>
+#include <fstream>
 
-  const char cert_filestr[] = "./cert-file.pem";
+int main(int argc, char* argv[]) {
+
+  const char* cert_filestr = "./cert-file.pem";
              EVP_PKEY *pkey = NULL;
   BIO              *certbio = NULL;
   BIO               *outbio = NULL;
   X509                *cert = NULL;
-  int ret;
-
+  
   /* ---------------------------------------------------------- *
    * These function calls initialize openssl for correct work.  *
    * ---------------------------------------------------------- */
@@ -27,16 +31,25 @@ int main() {
   ERR_load_BIO_strings();
   ERR_load_crypto_strings();
 
+  if (argc>1) cert_filestr = argv[1];
+
   /* ---------------------------------------------------------- *
    * Create the Input/Output BIO's.                             *
    * ---------------------------------------------------------- */
-  certbio = BIO_new(BIO_s_file());
-  outbio  = BIO_new_fp(stdout, BIO_NOCLOSE);
+  certbio = BIO_new(BIO_s_mem());
+
+  std::ifstream ifs{cert_filestr};
+
+  std::string content{std::istreambuf_iterator<char>(ifs),
+                      std::istreambuf_iterator<char>()};
+
+  BIO_puts(certbio, content.c_str());
+
+  outbio  = BIO_new(BIO_s_mem());
 
   /* ---------------------------------------------------------- *
    * Load the certificate from file (PEM).                      *
    * ---------------------------------------------------------- */
-  ret = BIO_read_filename(certbio, cert_filestr);
   if (! (cert = PEM_read_bio_X509(certbio, NULL, 0, NULL))) {
     BIO_printf(outbio, "Error loading cert into memory\n");
     exit(-1);
@@ -68,6 +81,16 @@ int main() {
 
   if(!PEM_write_bio_PUBKEY(outbio, pkey))
     BIO_printf(outbio, "Error writing public key data in PEM format");
+
+  std::vector<char> read_buf(1024);
+
+  while(true) {
+    int num_read = BIO_read(outbio, static_cast<void*>(read_buf.data()), read_buf.size());
+    if (num_read < 1) break;
+    
+    std::string_view read(read_buf.data(), num_read);
+    std::cout << read; 
+  }
 
   EVP_PKEY_free(pkey);
   X509_free(cert);
