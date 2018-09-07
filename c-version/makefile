@@ -1,5 +1,8 @@
-LDFLAGS+=-lssl -lcrypto
+LDFLAGS+=-lssl -lcrypto -ldl
 CXXFLAGS+=-std=c++17
 CXX=g++-8
 
-.DEFAULT_GOAL:=main
+TARGET=main
+TARGET=main-dl
+
+.DEFAULT_GOAL:=$(TARGET)
