@@ -7,11 +7,35 @@
 #include <stdlib.h>
 #include <string_view>
 #include <vector>
+#include <functional>
 
 #include <openssl/bio.h>
 #include <openssl/pem.h>
 
-using bio_s_mem_type            = BIO_METHOD *(*)(void);
+
+template<class R, class... Args>
+class Dynamic {
+  using func = std::function<R(Args...)>;
+  using return_type = R;
+
+  func d_func;
+
+  public:
+    Dynamic(void* handle, const char* symbol)
+    {
+      using sig_p = R(*)(Args...); 
+
+      sig_p s = (sig_p) dlsym(handle, symbol);
+
+      d_func = s;
+    }
+  
+    return_type operator()(Args&&... args)
+    {
+      return d_func(std::forward<Args>(args)...);
+    };
+};
+
 using bio_new_type              = BIO *(*)(BIO_METHOD *);
 using bio_puts_type             = int (*)(BIO *b, void *buf, int len);
 using bio_read_type             = int (*)(BIO *b, void *buf, int len);
@@ -27,7 +51,6 @@ using x509_free_type            = void (*)(X509 *);
 using evp_pkey_free_type        = void (*)(EVP_PKEY *);
 using evp_pkey_bits_type        = int (*)(EVP_PKEY *);
 
-bio_s_mem_type            bio_s_mem;
 bio_new_type              bio_new;
 bio_puts_type             bio_puts;
 bio_read_type             bio_read;
@@ -115,7 +138,8 @@ int main(int argc, char **argv)
 
     // ---------------- BIND dynamic methods
 
-    bio_s_mem    = (bio_s_mem_type)dlsym(handle, "BIO_s_mem");
+    Dynamic<BIO_METHOD*> bio_s_mem(handle, "BIO_s_mem");
+
     bio_new      = (bio_new_type)dlsym(handle, "BIO_new");
     bio_puts     = (bio_puts_type)dlsym(handle, "BIO_puts");
     bio_read     = (bio_read_type)dlsym(handle, "BIO_read");
@@ -138,7 +162,7 @@ int main(int argc, char **argv)
 
     // --------------- USE library
 
-    BIO_METHOD *m       = (*bio_s_mem)();
+    BIO_METHOD *m       = bio_s_mem();
 
     BIO        *certbio = (*bio_new)(m);
     (*bio_puts)(certbio, (void *)content.data(), content.size());
