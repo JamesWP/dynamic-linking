@@ -1,33 +1,44 @@
+#include <cstring>
+#include <dlfcn.h>
+#include <fstream>
+#include <iostream>
+#include <sstream>
 #include <stdio.h>
 #include <stdlib.h>
-#include <dlfcn.h>
-#include <vector>
 #include <string_view>
-#include <iostream>
-#include <cstring>
-#include <fstream>
+#include <vector>
 
 #include <openssl/bio.h>
 #include <openssl/pem.h>
 
-using bio_s_mem_type         = BIO_METHOD *(*)(void);
-using bio_new_type           = BIO *(*)(BIO_METHOD *);
-using bio_puts_type          = int (*)(BIO *b, void *buf, int len);
-using bio_read_type          = int (*)(BIO *b, void *buf, int len);
-using bio_write_type         = int (*)(BIO *b, const void *buf, int len);
-using bio_free_all_type      = void (*)(BIO *b);
-using pem_read_bio_x509_type = X509 *(*)(BIO *b,
+using bio_s_mem_type            = BIO_METHOD *(*)(void);
+using bio_new_type              = BIO *(*)(BIO_METHOD *);
+using bio_puts_type             = int (*)(BIO *b, void *buf, int len);
+using bio_read_type             = int (*)(BIO *b, void *buf, int len);
+using bio_write_type            = int (*)(BIO *b, const void *buf, int len);
+using bio_free_all_type         = void (*)(BIO *b);
+using pem_read_bio_x509_type    = X509 *(*)(BIO *b,
                                          X509 **,
                                          pem_password_cb *cb,
                                          void            *u);
+using pem_write_bio_pubkey_type = int (*)(BIO *, EVP_PKEY *);
+using x509_get_pubkey_type      = EVP_PKEY *(*)(X509 *);
+using x509_free_type            = void (*)(X509 *);
+using evp_pkey_free_type        = void (*)(EVP_PKEY *);
+using evp_pkey_bits_type        = int (*)(EVP_PKEY *);
 
-bio_s_mem_type         bio_s_mem;
-bio_new_type           bio_new;
-bio_puts_type          bio_puts;
-bio_read_type          bio_read;
-bio_write_type         bio_write;
-bio_free_all_type      bio_free_all;
-pem_read_bio_x509_type pem_read_bio_x509;
+bio_s_mem_type            bio_s_mem;
+bio_new_type              bio_new;
+bio_puts_type             bio_puts;
+bio_read_type             bio_read;
+bio_write_type            bio_write;
+bio_free_all_type         bio_free_all;
+pem_read_bio_x509_type    pem_read_bio_x509;
+pem_write_bio_pubkey_type pem_write_bio_pubkey;
+x509_get_pubkey_type      x509_get_pubkey;
+x509_free_type            x509_free;
+evp_pkey_free_type        evp_pkey_free;
+evp_pkey_bits_type        evp_pkey_bits;
 
 void process(BIO* certbio, BIO* outbio)
 {
@@ -40,32 +51,39 @@ void process(BIO* certbio, BIO* outbio)
         return;
     }
 
-#if 0
-    if ((pkey = X509_get_pubkey(cert)) == NULL)
-        BIO_printf(outbio, "Error getting public key from certificate");
+    if ((pkey = (*x509_get_pubkey)(cert)) == NULL) {
+        const char* err = "Error getting public key from certificate";
+        (*bio_write)(outbio, (void*)err, std::strlen(err));
+    }
 
     /* display the key type and size here */
     if (pkey) {
+        std::ostringstream info;
+
+        int bits = (*evp_pkey_bits)(pkey);
+
         switch (pkey->type) {
           case EVP_PKEY_RSA:
-            BIO_printf(outbio, "%d bit RSA Key\n\n", EVP_PKEY_bits(pkey));
+            info << bits << " bit RSA Key\n\n";
             break;
           case EVP_PKEY_DSA:
-            BIO_printf(outbio, "%d bit DSA Key\n\n", EVP_PKEY_bits(pkey));
+            info << bits << " bit DSA Key\n\n";
             break;
           default:
-            BIO_printf(
-                outbio, "%d bit non-RSA/DSA Key\n\n", EVP_PKEY_bits(pkey));
+            info << bits << " bit non-RSA/DSA Key\n\n";
             break;
         }
+
+        (*bio_write)(outbio, (void*) info.str().c_str(), info.str().size());
     }
 
-    if (!PEM_write_bio_PUBKEY(outbio, pkey))
-        BIO_printf(outbio, "Error writing public key data in PEM format");
+    if (!(*pem_write_bio_pubkey)(outbio, pkey)) {
+        const char* err = "Error writing public key data in PEM format";
+        (*bio_write)(outbio, (void*)err, std::strlen(err));
+    }
 
-    EVP_PKEY_free(pkey);
-    X509_free(cert);
-#endif
+    (*evp_pkey_free)(pkey);
+    (*x509_free)(cert);
 }
 
 int main(int argc, char **argv)
@@ -74,7 +92,9 @@ int main(int argc, char **argv)
 
     void *handle;
     char *error;
+    
     handle = dlopen("/lib/x86_64-linux-gnu/libcrypto.so.1.0.0", RTLD_LAZY);
+
     if (!handle) {
         fprintf(stderr, "%s\n", dlerror());
         exit(1);
@@ -103,7 +123,12 @@ int main(int argc, char **argv)
     bio_free_all = (bio_free_all_type)dlsym(handle, "BIO_free_all");
     pem_read_bio_x509 =
         (pem_read_bio_x509_type)dlsym(handle, "PEM_read_bio_X509");
-
+    pem_write_bio_pubkey =
+        (pem_write_bio_pubkey_type)dlsym(handle, "PEM_write_bio_PUBKEY");
+    x509_get_pubkey = (x509_get_pubkey_type)dlsym(handle, "X509_get_pubkey");
+    x509_free       = (x509_free_type)dlsym(handle, "X509_free");
+    evp_pkey_free   = (evp_pkey_free_type)dlsym(handle, "EVP_PKEY_free");
+    evp_pkey_bits   = (evp_pkey_bits_type)dlsym(handle, "EVP_PKEY_bits");
     // --------------- HANDLE errors
 
     if ((error = dlerror()) != NULL) {
