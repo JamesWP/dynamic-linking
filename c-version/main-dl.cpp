@@ -8,82 +8,83 @@
 #include <string_view>
 #include <vector>
 #include <functional>
+#include <cassert>
 
 #include <openssl/bio.h>
 #include <openssl/pem.h>
 
-
-template<class R, class... Args>
+template <class R, class... Args>
 class Dynamic {
-  using func = std::function<R(Args...)>;
-  using return_type = R;
+    using func        = std::function<R(Args...)>;
+    using return_type = R;
 
-  func d_func;
+    // data members
+    func              d_func;
+    const char *const d_symbol;
 
   public:
-    Dynamic(void* handle, const char* symbol)
+    Dynamic(const char *symbol): d_symbol{symbol} {}
+
+    void init(void *handle)
     {
-      using sig_p = R(*)(Args...); 
+        using sig_p = R (*)(Args...);
 
-      sig_p s = (sig_p) dlsym(handle, symbol);
+        sig_p s = (sig_p)dlsym(handle, d_symbol);
 
-      d_func = s;
+        d_func = s;
+
+        const char* error;
+        if ((error = dlerror()) != NULL) {
+            throw std::runtime_error(error);
+        }
     }
-  
-    return_type operator()(Args&&... args)
+
+    // the extra template params are needed to support implicit conversions?
+    template<class...CallArgs>
+    return_type operator()(CallArgs&&... args)
     {
-      return d_func(std::forward<Args>(args)...);
+        assert(d_func);  // must have called init first
+        return d_func(std::forward<CallArgs>(args)...);
     };
 };
 
-using bio_new_type              = BIO *(*)(BIO_METHOD *);
-using bio_puts_type             = int (*)(BIO *b, void *buf, int len);
-using bio_read_type             = int (*)(BIO *b, void *buf, int len);
-using bio_write_type            = int (*)(BIO *b, const void *buf, int len);
-using bio_free_all_type         = void (*)(BIO *b);
-using pem_read_bio_x509_type    = X509 *(*)(BIO *b,
-                                         X509 **,
-                                         pem_password_cb *cb,
-                                         void            *u);
-using pem_write_bio_pubkey_type = int (*)(BIO *, EVP_PKEY *);
-using x509_get_pubkey_type      = EVP_PKEY *(*)(X509 *);
-using x509_free_type            = void (*)(X509 *);
-using evp_pkey_free_type        = void (*)(EVP_PKEY *);
-using evp_pkey_bits_type        = int (*)(EVP_PKEY *);
+Dynamic<BIO_METHOD *>            bio_s_mem("BIO_s_mem");
+Dynamic<BIO *, BIO_METHOD *>     bio_new("BIO_new");
+Dynamic<int, BIO *, void *, int> bio_puts("BIO_puts");
+Dynamic<int, BIO *, void *, int> bio_read("BIO_read");
+Dynamic<int, BIO *, const void *, int> bio_write("BIO_write");
+Dynamic<void, BIO*> bio_free_all("BIO_free_all");
 
-bio_new_type              bio_new;
-bio_puts_type             bio_puts;
-bio_read_type             bio_read;
-bio_write_type            bio_write;
-bio_free_all_type         bio_free_all;
-pem_read_bio_x509_type    pem_read_bio_x509;
-pem_write_bio_pubkey_type pem_write_bio_pubkey;
-x509_get_pubkey_type      x509_get_pubkey;
-x509_free_type            x509_free;
-evp_pkey_free_type        evp_pkey_free;
-evp_pkey_bits_type        evp_pkey_bits;
+using prbx = Dynamic<X509 *, BIO *, X509 **, pem_password_cb *, void *>;
+prbx pem_read_bio_x509("PEM_read_bio_X509");
+
+Dynamic<int, BIO *, EVP_PKEY *> pem_write_bio_pubkey("PEM_write_bio_PUBKEY");
+Dynamic<EVP_PKEY *, X509 *>     x509_get_pubkey("X509_get_pubkey");
+Dynamic<void, X509 *>           x509_free("X509_free");
+Dynamic<void, EVP_PKEY *>       evp_pkey_free("EVP_PKEY_free");
+Dynamic<int, EVP_PKEY *>        evp_pkey_bits("EVP_PKEY_bits");
 
 void process(BIO* certbio, BIO* outbio)
 {
     EVP_PKEY *pkey = NULL;
     X509     *cert = NULL;
     
-    if (!(cert = (*pem_read_bio_x509)(certbio, NULL, 0, NULL))) {
+    if (!(cert = pem_read_bio_x509(certbio, nullptr, nullptr, nullptr))) {
         const char* err = "Error loading cert into memory\n";
-        (*bio_write)(outbio, (void*)err, std::strlen(err));
+        bio_write(outbio, (void*)err, std::strlen(err));
         return;
     }
 
-    if ((pkey = (*x509_get_pubkey)(cert)) == NULL) {
+    if ((pkey = x509_get_pubkey(cert)) == NULL) {
         const char* err = "Error getting public key from certificate";
-        (*bio_write)(outbio, (void*)err, std::strlen(err));
+        bio_write(outbio, (void*)err, std::strlen(err));
     }
 
     /* display the key type and size here */
     if (pkey) {
         std::ostringstream info;
 
-        int bits = (*evp_pkey_bits)(pkey);
+        int bits = evp_pkey_bits(pkey);
 
         switch (pkey->type) {
           case EVP_PKEY_RSA:
@@ -97,16 +98,16 @@ void process(BIO* certbio, BIO* outbio)
             break;
         }
 
-        (*bio_write)(outbio, (void*) info.str().c_str(), info.str().size());
+        bio_write(outbio, (void*) info.str().c_str(), info.str().size());
     }
 
-    if (!(*pem_write_bio_pubkey)(outbio, pkey)) {
+    if (!pem_write_bio_pubkey(outbio, pkey)) {
         const char* err = "Error writing public key data in PEM format";
-        (*bio_write)(outbio, (void*)err, std::strlen(err));
+        bio_write(outbio, (void*)err, std::strlen(err));
     }
 
-    (*evp_pkey_free)(pkey);
-    (*x509_free)(cert);
+    evp_pkey_free(pkey);
+    x509_free(cert);
 }
 
 int main(int argc, char **argv)
@@ -137,44 +138,33 @@ int main(int argc, char **argv)
                         std::istreambuf_iterator<char>()};
 
     // ---------------- BIND dynamic methods
-
-    Dynamic<BIO_METHOD*> bio_s_mem(handle, "BIO_s_mem");
-
-    bio_new      = (bio_new_type)dlsym(handle, "BIO_new");
-    bio_puts     = (bio_puts_type)dlsym(handle, "BIO_puts");
-    bio_read     = (bio_read_type)dlsym(handle, "BIO_read");
-    bio_write    = (bio_write_type)dlsym(handle, "BIO_write");
-    bio_free_all = (bio_free_all_type)dlsym(handle, "BIO_free_all");
-    pem_read_bio_x509 =
-        (pem_read_bio_x509_type)dlsym(handle, "PEM_read_bio_X509");
-    pem_write_bio_pubkey =
-        (pem_write_bio_pubkey_type)dlsym(handle, "PEM_write_bio_PUBKEY");
-    x509_get_pubkey = (x509_get_pubkey_type)dlsym(handle, "X509_get_pubkey");
-    x509_free       = (x509_free_type)dlsym(handle, "X509_free");
-    evp_pkey_free   = (evp_pkey_free_type)dlsym(handle, "EVP_PKEY_free");
-    evp_pkey_bits   = (evp_pkey_bits_type)dlsym(handle, "EVP_PKEY_bits");
-    // --------------- HANDLE errors
-
-    if ((error = dlerror()) != NULL) {
-        fprintf(stderr, "%s\n", error);
-        exit(1);
-    }
+    bio_s_mem.init(handle);
+    bio_new.init(handle);
+    bio_puts.init(handle);
+    bio_read.init(handle);
+    bio_write.init(handle);
+    bio_free_all.init(handle);
+    pem_read_bio_x509.init(handle);
+    pem_write_bio_pubkey.init(handle);
+    x509_get_pubkey.init(handle);
+    x509_free.init(handle);
+    evp_pkey_free.init(handle);
+    evp_pkey_bits.init(handle);
 
     // --------------- USE library
-
     BIO_METHOD *m       = bio_s_mem();
 
-    BIO        *certbio = (*bio_new)(m);
-    (*bio_puts)(certbio, (void *)content.data(), content.size());
+    BIO        *certbio = bio_new(m);
+    bio_puts(certbio, (void *)content.data(), content.size());
 
-    BIO        *outbio = (*bio_new)(m);
+    BIO        *outbio = bio_new(m);
 
     process(certbio, outbio);
 
     std::vector<char> read_buf(1024);
 
     while (true) {
-        int num_read = (*bio_read)(
+        int num_read = bio_read(
             outbio, static_cast<void *>(read_buf.data()), read_buf.size());
         if (num_read < 1)
             break;
@@ -182,8 +172,8 @@ int main(int argc, char **argv)
         std::cout << read;
     }
 
-    (*bio_free_all)(certbio);
-    (*bio_free_all)(outbio);
+    bio_free_all(certbio);
+    bio_free_all(outbio);
     // ----------- CLOSE dynamic library
 
     dlclose(handle);
